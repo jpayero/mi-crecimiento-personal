@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import pdf from 'pdf-parse';
 import JSZip from 'jszip';
+
+// Note: PDF support is disabled in production due to node-canvas dependency issues
+// PDF files will return a message asking users to use TXT or EPUB format
 
 interface BookSection {
   title: string;
@@ -15,11 +17,41 @@ interface GeneratedCard {
   icon: string;
 }
 
-// Extract text from PDF
+// Simple PDF text extraction (limited support)
+// For full PDF support, users should convert to TXT or EPUB
 async function extractPdfText(buffer: Buffer): Promise<string> {
   try {
-    const data = await pdf(buffer, { max: 0 });
-    return data.text;
+    // Simple extraction: look for text streams in PDF
+    const text = buffer.toString('utf-8');
+    
+    // Extract text between BT and ET markers (basic PDF text)
+    const textMatches = text.match(/BT[\s\S]*?ET/g) || [];
+    let extractedText = '';
+    
+    for (const match of textMatches) {
+      // Extract text between parentheses
+      const parentheses = match.match(/\(([^)]+)\)/g) || [];
+      for (const p of parentheses) {
+        extractedText += p.replace(/[()]/g, '') + ' ';
+      }
+    }
+    
+    // Also try to extract any readable text
+    const readableText = text
+      .replace(/[^\x20-\x7EáéíóúñÁÉÍÓÚÑüÜ\n\r]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    
+    if (extractedText.length > 100) {
+      return extractedText;
+    }
+    
+    // Fallback to readable ASCII text
+    if (readableText.length > 100) {
+      return readableText;
+    }
+    
+    return 'PDF detectado. Por favor, convierte el archivo a formato TXT o EPUB para mejor extracción de texto.';
   } catch (error) {
     console.error('PDF extraction error:', error);
     return '';
