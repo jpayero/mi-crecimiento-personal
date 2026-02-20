@@ -11,7 +11,8 @@ import {
   CheckCircle, 
   X, 
   File,
-  AlertCircle
+  AlertCircle,
+  BookOpen
 } from 'lucide-react';
 
 interface DirectBookUploaderProps {
@@ -27,6 +28,7 @@ export function DirectBookUploader({ onBookGenerated, onClose }: DirectBookUploa
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [processingStatus, setProcessingStatus] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -43,9 +45,9 @@ export function DirectBookUploader({ onBookGenerated, onClose }: DirectBookUploa
         return;
       }
 
-      const maxSize = 20 * 1024 * 1024; // 20MB
+      const maxSize = 30 * 1024 * 1024; // 30MB
       if (selectedFile.size > maxSize) {
-        setError('El archivo es muy grande. Máximo 20MB');
+        setError('El archivo es muy grande. Máximo 30MB');
         return;
       }
 
@@ -61,13 +63,14 @@ export function DirectBookUploader({ onBookGenerated, onClose }: DirectBookUploa
 
   const handleUpload = async () => {
     if (!file || !title.trim()) {
-      setError('Por favor ingresa el título del libro');
+      setError('Por favor selecciona un archivo e ingresa el título');
       return;
     }
 
     setIsUploading(true);
     setError(null);
     setUploadProgress(0);
+    setProcessingStatus('Leyendo archivo...');
 
     try {
       const formData = new FormData();
@@ -76,24 +79,27 @@ export function DirectBookUploader({ onBookGenerated, onClose }: DirectBookUploa
       formData.append('author', author.trim() || 'Desconocido');
 
       setUploadProgress(20);
+      setProcessingStatus('Extrayendo texto...');
 
-      // Use the direct upload endpoint (no AI)
       const response = await fetch('/api/upload-book-direct', {
         method: 'POST',
         body: formData,
       });
 
-      setUploadProgress(60);
+      setUploadProgress(50);
+      setProcessingStatus('Procesando contenido...');
 
       const data = await response.json();
 
-      setUploadProgress(90);
+      setUploadProgress(80);
+      setProcessingStatus('Generando páginas...');
 
       if (!response.ok) {
         throw new Error(data.error || 'Error al procesar el libro');
       }
 
       setUploadProgress(100);
+      setProcessingStatus('¡Completado!');
       setSuccess(true);
       
       // Save content to sessionStorage for the reader
@@ -109,7 +115,7 @@ export function DirectBookUploader({ onBookGenerated, onClose }: DirectBookUploa
       setTimeout(() => {
         onBookGenerated(data.book);
         onClose();
-      }, 1500);
+      }, 1200);
 
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error desconocido');
@@ -130,11 +136,11 @@ export function DirectBookUploader({ onBookGenerated, onClose }: DirectBookUploa
   };
 
   return (
-    <Card className="bg-slate-900/95 border-slate-700 w-full max-w-lg">
+    <Card className="bg-slate-900/95 border-slate-700 w-full max-w-md">
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
           <CardTitle className="text-white text-lg flex items-center gap-2">
-            <Upload className="h-5 w-5 text-emerald-400" />
+            <BookOpen className="h-5 w-5 text-emerald-400" />
             Subir Libro
           </CardTitle>
           <Button
@@ -152,19 +158,19 @@ export function DirectBookUploader({ onBookGenerated, onClose }: DirectBookUploa
         {success ? (
           <div className="flex flex-col items-center py-8 text-center">
             <CheckCircle className="h-16 w-16 text-emerald-400 mb-4" />
-            <p className="text-white text-lg font-medium">¡Libro cargado exitosamente!</p>
-            <p className="text-slate-400 text-sm mt-1">Procesado sin IA - Contenido extraído</p>
+            <p className="text-white text-lg font-medium">¡Libro cargado!</p>
+            <p className="text-slate-400 text-sm mt-1">{title}</p>
           </div>
         ) : (
           <>
             {/* Drop Zone */}
             <div
               className={`
-                border-2 border-dashed rounded-lg p-6 text-center cursor-pointer
+                border-2 border-dashed rounded-lg p-8 text-center cursor-pointer
                 transition-all duration-200
                 ${file 
                   ? 'border-emerald-500 bg-emerald-500/10' 
-                  : 'border-slate-600 hover:border-slate-500 hover:bg-slate-800/50'}
+                  : 'border-slate-600 hover:border-emerald-500/50 hover:bg-slate-800/50'}
               `}
               onClick={() => fileInputRef.current?.click()}
               onDrop={handleDrop}
@@ -180,7 +186,7 @@ export function DirectBookUploader({ onBookGenerated, onClose }: DirectBookUploa
               
               {file ? (
                 <div className="flex items-center justify-center gap-3">
-                  <FileText className="h-8 w-8 text-emerald-400" />
+                  <FileText className="h-10 w-10 text-emerald-400" />
                   <div className="text-left">
                     <p className="text-white font-medium">{file.name}</p>
                     <p className="text-slate-400 text-sm">
@@ -190,12 +196,12 @@ export function DirectBookUploader({ onBookGenerated, onClose }: DirectBookUploa
                 </div>
               ) : (
                 <>
-                  <Upload className="h-10 w-10 text-slate-500 mx-auto mb-3" />
-                  <p className="text-slate-300 font-medium">
+                  <Upload className="h-12 w-12 text-emerald-400 mx-auto mb-3" />
+                  <p className="text-white font-medium mb-1">
                     Arrastra un archivo o haz clic aquí
                   </p>
-                  <p className="text-slate-500 text-sm mt-1">
-                    PDF, EPUB o TXT (max 20MB)
+                  <p className="text-slate-500 text-sm">
+                    PDF, EPUB o TXT (máx. 30MB)
                   </p>
                 </>
               )}
@@ -203,33 +209,36 @@ export function DirectBookUploader({ onBookGenerated, onClose }: DirectBookUploa
 
             {/* Progress bar */}
             {isUploading && (
-              <div className="w-full bg-slate-700 rounded-full h-2">
-                <div 
-                  className="bg-emerald-500 h-2 rounded-full transition-all duration-300"
-                  style={{ width: `${uploadProgress}%` }}
-                />
+              <div className="space-y-2">
+                <div className="w-full bg-slate-700 rounded-full h-3">
+                  <div 
+                    className="bg-gradient-to-r from-emerald-500 to-teal-500 h-3 rounded-full transition-all duration-300"
+                    style={{ width: `${uploadProgress}%` }}
+                  />
+                </div>
+                <p className="text-center text-slate-400 text-sm">{processingStatus}</p>
               </div>
             )}
 
             {/* Book Info */}
             <div className="space-y-3">
               <div>
-                <label className="text-slate-400 text-sm mb-1 block">Título del libro *</label>
+                <label className="text-slate-300 text-sm mb-1 block font-medium">Título del libro *</label>
                 <Input
-                  placeholder="Ej: Atomic Habits"
+                  placeholder="Ej: El Principito"
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
-                  className="bg-slate-800 border-slate-700 text-white"
+                  className="bg-slate-800 border-slate-600 text-white placeholder:text-slate-500"
                   disabled={isUploading}
                 />
               </div>
               <div>
-                <label className="text-slate-400 text-sm mb-1 block">Autor (opcional)</label>
+                <label className="text-slate-300 text-sm mb-1 block font-medium">Autor (opcional)</label>
                 <Input
-                  placeholder="Ej: James Clear"
+                  placeholder="Ej: Antoine de Saint-Exupéry"
                   value={author}
                   onChange={(e) => setAuthor(e.target.value)}
-                  className="bg-slate-800 border-slate-700 text-white"
+                  className="bg-slate-800 border-slate-600 text-white placeholder:text-slate-500"
                   disabled={isUploading}
                 />
               </div>
@@ -237,22 +246,21 @@ export function DirectBookUploader({ onBookGenerated, onClose }: DirectBookUploa
 
             {/* Error Message */}
             {error && (
-              <div className="flex items-center gap-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
-                <AlertCircle className="h-4 w-4 text-red-400" />
-                <p className="text-red-400 text-sm">{error}</p>
+              <div className="flex items-center gap-2 p-3 bg-red-500/20 border border-red-500/30 rounded-lg">
+                <AlertCircle className="h-4 w-4 text-red-400 flex-shrink-0" />
+                <p className="text-red-300 text-sm">{error}</p>
               </div>
             )}
 
             {/* Info */}
-            <div className="flex items-start gap-2 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg">
-              <File className="h-4 w-4 text-emerald-400 mt-0.5" />
-              <div className="text-slate-300 text-xs">
-                <p className="font-medium text-emerald-300 mb-1">Procesamiento Local (Sin IA)</p>
-                <ul className="list-disc list-inside text-slate-400 space-y-0.5">
-                  <li>El texto se extrae directamente del archivo</li>
-                  <li>Se generan tarjetas automáticamente</li>
-                  <li>Detección de capítulos y secciones</li>
-                  <li>Extracción de conceptos clave</li>
+            <div className="flex items-start gap-3 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg">
+              <File className="h-5 w-5 text-emerald-400 mt-0.5 flex-shrink-0" />
+              <div className="text-sm">
+                <p className="font-medium text-emerald-300 mb-1">Procesamiento Directo</p>
+                <ul className="text-slate-400 text-xs space-y-1">
+                  <li>• El texto se extrae directamente del archivo</li>
+                  <li>• Se divide en páginas para lectura fácil</li>
+                  <li>• No se usa inteligencia artificial</li>
                 </ul>
               </div>
             </div>
@@ -261,17 +269,17 @@ export function DirectBookUploader({ onBookGenerated, onClose }: DirectBookUploa
             <Button
               onClick={handleUpload}
               disabled={!file || !title.trim() || isUploading}
-              className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700"
+              className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-medium py-6"
             >
               {isUploading ? (
                 <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Procesando libro...
+                  <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+                  {processingStatus}
                 </>
               ) : (
                 <>
-                  <Upload className="h-4 w-4 mr-2" />
-                  Subir Libro
+                  <Upload className="h-5 w-5 mr-2" />
+                  Subir y Procesar
                 </>
               )}
             </Button>

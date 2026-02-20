@@ -3,7 +3,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Book } from '@/data/books';
 import { Button } from '@/components/ui/button';
-import { ChevronLeft, ChevronRight, X, BookOpen, Home, Upload, Maximize, Minimize, Loader2, FileText, BookMarked, Menu } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { Slider } from '@/components/ui/slider';
+import { 
+  ChevronLeft, ChevronRight, X, BookOpen, Home, Upload, 
+  Maximize, Minimize, Loader2, BookMarked, List, 
+  Search, Bookmark, Settings, ZoomIn, ZoomOut
+} from 'lucide-react';
 
 // Helper to get book content from sessionStorage
 function getBookContentFromSession(bookId: string): string[] | null {
@@ -34,26 +40,24 @@ export function LeatherBookReader({ book, onClose }: LeatherBookReaderProps) {
   const [bookTitle, setBookTitle] = useState(book.title);
   const [bookAuthor, setBookAuthor] = useState(book.author);
   const [showPageList, setShowPageList] = useState(false);
+  const [fontSize, setFontSize] = useState(16);
+  const [jumpToPage, setJumpToPage] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const pageContentRef = useRef<HTMLDivElement>(null);
+  const touchStartRef = useRef<number | null>(null);
   
   // Initialize pages from book - priority: fullContent > sessionStorage > cards
   useEffect(() => {
-    // First check if book has fullContent (for uploaded books)
     if (book.fullContent && book.fullContent.length > 0) {
       console.log('Using fullContent from book, pages:', book.fullContent.length);
       setPages(book.fullContent);
-    } 
-    // Check sessionStorage for content
-    else {
+    } else {
       const sessionContent = getBookContentFromSession(book.id);
       if (sessionContent && sessionContent.length > 0) {
         console.log('Using content from sessionStorage, pages:', sessionContent.length);
         setPages(sessionContent);
-      }
-      // Fallback to cards if no fullContent
-      else if (book.cards && book.cards.length > 0) {
+      } else if (book.cards && book.cards.length > 0) {
         console.log('Using cards from book, cards:', book.cards.length);
         const cardPages = book.cards.map(card => 
           `${card.icon} ${card.title}\n\n${card.content}`
@@ -90,9 +94,6 @@ export function LeatherBookReader({ book, onClose }: LeatherBookReaderProps) {
   
   const handleOpenBook = () => {
     setIsOpen(true);
-    setTimeout(() => {
-      containerRef.current?.requestFullscreen();
-    }, 100);
   };
   
   const handlePrevPage = useCallback(() => {
@@ -106,14 +107,46 @@ export function LeatherBookReader({ book, onClose }: LeatherBookReaderProps) {
   const goToPage = useCallback((pageIndex: number) => {
     setCurrentPage(Math.max(0, Math.min(pageIndex, totalPages - 1)));
     setShowPageList(false);
+    setJumpToPage('');
   }, [totalPages]);
 
-  // Keyboard navigation - ONLY when book is open
+  const handleJumpToPage = useCallback(() => {
+    const pageNum = parseInt(jumpToPage);
+    if (!isNaN(pageNum) && pageNum >= 1 && pageNum <= totalPages) {
+      goToPage(pageNum - 1);
+    }
+  }, [jumpToPage, totalPages, goToPage]);
+
+  // Touch/Swipe navigation
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    touchStartRef.current = e.touches[0].clientX;
+  }, []);
+
+  const handleTouchEnd = useCallback((e: React.TouchEvent) => {
+    if (touchStartRef.current === null) return;
+    
+    const touchEnd = e.changedTouches[0].clientX;
+    const diff = touchStartRef.current - touchEnd;
+    
+    // Swipe threshold of 50px
+    if (Math.abs(diff) > 50) {
+      if (diff > 0) {
+        // Swipe left - next page
+        handleNextPage();
+      } else {
+        // Swipe right - prev page
+        handlePrevPage();
+      }
+    }
+    
+    touchStartRef.current = null;
+  }, [handleNextPage, handlePrevPage]);
+
+  // Keyboard navigation
   useEffect(() => {
     if (!isOpen) return;
     
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Stop propagation to prevent main page from handling
       e.stopPropagation();
       
       switch (e.key) {
@@ -121,6 +154,12 @@ export function LeatherBookReader({ book, onClose }: LeatherBookReaderProps) {
           handlePrevPage();
           break;
         case 'ArrowRight':
+          handleNextPage();
+          break;
+        case 'ArrowUp':
+          handlePrevPage();
+          break;
+        case 'ArrowDown':
           handleNextPage();
           break;
         case 'Escape':
@@ -136,14 +175,27 @@ export function LeatherBookReader({ book, onClose }: LeatherBookReaderProps) {
         case 'F':
           toggleFullscreen();
           break;
+        case 'Home':
+          setCurrentPage(0);
+          break;
+        case 'End':
+          setCurrentPage(totalPages - 1);
+          break;
+        case '+':
+        case '=':
+          setFontSize(prev => Math.min(24, prev + 2));
+          break;
+        case '-':
+          setFontSize(prev => Math.max(12, prev - 2));
+          break;
       }
     };
     
-    window.addEventListener('keydown', handleKeyDown, true); // Use capture phase
+    window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [isOpen, handlePrevPage, handleNextPage, onClose, toggleFullscreen, showPageList]);
+  }, [isOpen, handlePrevPage, handleNextPage, onClose, toggleFullscreen, showPageList, totalPages]);
 
-  // Handle file upload - NO AI
+  // Handle file upload
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -167,9 +219,7 @@ export function LeatherBookReader({ book, onClose }: LeatherBookReaderProps) {
         throw new Error(data.error || 'Error al procesar el archivo');
       }
       
-      // Set pages from full content
       if (data.book?.fullContent && Array.isArray(data.book.fullContent)) {
-        // Save content to sessionStorage for this session
         try {
           sessionStorage.setItem(`book-content-${data.book.id}`, JSON.stringify(data.book.fullContent));
         } catch (e) {
@@ -181,11 +231,7 @@ export function LeatherBookReader({ book, onClose }: LeatherBookReaderProps) {
         setBookAuthor(data.book.author || 'Desconocido');
         setCurrentPage(0);
         setIsOpen(true);
-        setTimeout(() => {
-          containerRef.current?.requestFullscreen();
-        }, 100);
       } else if (data.book?.cards) {
-        // Fallback to cards
         const cardPages = data.book.cards.map((card: { icon: string; title: string; content: string }) => 
           `${card.icon} ${card.title}\n\n${card.content}`
         );
@@ -200,7 +246,6 @@ export function LeatherBookReader({ book, onClose }: LeatherBookReaderProps) {
       setUploadError(error instanceof Error ? error.message : 'Error desconocido');
     } finally {
       setIsUploading(false);
-      // Reset file input
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
@@ -253,9 +298,9 @@ export function LeatherBookReader({ book, onClose }: LeatherBookReaderProps) {
         
         {/* Upload error */}
         {uploadError && (
-          <div className="absolute top-20 left-4 right-4 sm:left-auto sm:right-auto sm:w-96 bg-red-900/80 text-red-100 p-3 rounded-lg text-sm z-20">
+          <div className="absolute top-20 left-4 right-4 sm:left-auto sm:right-auto sm:w-96 bg-red-900/80 text-red-100 p-3 rounded-lg text-sm z-20 flex items-center justify-between">
             {uploadError}
-            <Button variant="ghost" size="sm" onClick={() => setUploadError(null)} className="ml-2 text-red-200 h-6 w-6 p-0">
+            <Button variant="ghost" size="sm" onClick={() => setUploadError(null)} className="text-red-200 h-6 w-6 p-0">
               <X className="h-4 w-4" />
             </Button>
           </div>
@@ -267,7 +312,7 @@ export function LeatherBookReader({ book, onClose }: LeatherBookReaderProps) {
             Sube un libro (PDF, EPUB o TXT) para leerlo
           </p>
           <p className="text-slate-500 text-xs">
-            Procesamiento local sin IA
+            Procesamiento local sin IA - Extracción directa de texto
           </p>
         </div>
         
@@ -276,10 +321,8 @@ export function LeatherBookReader({ book, onClose }: LeatherBookReaderProps) {
           className="relative cursor-pointer transform transition-all duration-500 hover:scale-105"
           onClick={handleOpenBook}
         >
-          {/* Spine shadow */}
           <div className="absolute -left-4 top-2 bottom-2 w-8 bg-gradient-to-r from-black/50 to-transparent rounded-l-sm" />
           
-          {/* Cover */}
           <div 
             className="relative w-72 h-96 sm:w-80 sm:h-[28rem] rounded-r-lg rounded-l-sm overflow-hidden"
             style={{
@@ -287,7 +330,6 @@ export function LeatherBookReader({ book, onClose }: LeatherBookReaderProps) {
               boxShadow: '0 25px 50px -12px rgba(0,0,0,0.8)'
             }}
           >
-            {/* Leather texture */}
             <div 
               className="absolute inset-0 opacity-30"
               style={{
@@ -295,16 +337,12 @@ export function LeatherBookReader({ book, onClose }: LeatherBookReaderProps) {
               }}
             />
             
-            {/* Border */}
             <div className="absolute inset-4 border-2 border-amber-600/40 rounded" />
-            
-            {/* Corners */}
             <div className="absolute top-6 left-6 w-8 h-8 border-t-2 border-l-2 border-amber-500/60" />
             <div className="absolute top-6 right-6 w-8 h-8 border-t-2 border-r-2 border-amber-500/60" />
             <div className="absolute bottom-6 left-6 w-8 h-8 border-b-2 border-l-2 border-amber-500/60" />
             <div className="absolute bottom-6 right-6 w-8 h-8 border-b-2 border-r-2 border-amber-500/60" />
             
-            {/* Title */}
             <div className="absolute inset-0 flex flex-col items-center justify-center p-8 text-center">
               <div className="mb-4 text-5xl">📖</div>
               <h2 
@@ -313,10 +351,7 @@ export function LeatherBookReader({ book, onClose }: LeatherBookReaderProps) {
               >
                 {bookTitle}
               </h2>
-              <p 
-                className="text-lg italic"
-                style={{ color: '#a67c52' }}
-              >
+              <p className="text-lg italic" style={{ color: '#a67c52' }}>
                 {bookAuthor}
               </p>
               
@@ -327,7 +362,6 @@ export function LeatherBookReader({ book, onClose }: LeatherBookReaderProps) {
               </p>
             </div>
             
-            {/* Hint */}
             <div className="absolute bottom-8 left-0 right-0 flex justify-center">
               <div className="bg-amber-900/50 backdrop-blur-sm px-4 py-2 rounded-full animate-pulse">
                 <p className="text-amber-200 text-sm flex items-center gap-2">
@@ -338,7 +372,6 @@ export function LeatherBookReader({ book, onClose }: LeatherBookReaderProps) {
             </div>
           </div>
           
-          {/* Pages effect */}
           <div className="absolute top-2 bottom-2 -right-1 w-3 bg-gradient-to-r from-amber-100 to-amber-50 rounded-r-sm" />
           <div className="absolute top-2 bottom-2 -right-2 w-2 bg-amber-200 rounded-r-sm" />
           <div className="absolute top-2 bottom-2 -right-3 w-1 bg-amber-300 rounded-r-sm" />
@@ -347,34 +380,78 @@ export function LeatherBookReader({ book, onClose }: LeatherBookReaderProps) {
     );
   }
 
-  // Open book view
   const currentPageContent = pages[currentPage] || '';
   
   return (
     <div 
       ref={containerRef}
       className="fixed inset-0 z-[100] flex flex-col bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950"
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
     >
       {/* Header */}
-      <div className="flex items-center justify-between p-3 sm:p-4 bg-black/50 z-20 shrink-0">
-        <div className="flex items-center gap-2 sm:gap-4">
+      <div className="flex items-center justify-between p-2 sm:p-3 bg-black/70 z-20 shrink-0 border-b border-slate-700">
+        <div className="flex items-center gap-2 sm:gap-3">
           <Button 
             variant="ghost" 
             onClick={onClose} 
-            className="text-white hover:bg-slate-800"
+            className="text-white hover:bg-slate-800 h-9 w-9 sm:w-auto sm:px-3"
           >
             <Home className="h-5 w-5 sm:mr-2" />
             <span className="hidden sm:inline">Volver</span>
           </Button>
           <div className="text-white">
-            <p className="text-sm font-medium truncate max-w-[150px] sm:max-w-none">{bookTitle}</p>
+            <p className="text-sm font-medium truncate max-w-[120px] sm:max-w-[200px]">{bookTitle}</p>
             <p className="text-xs opacity-70">
               Página {currentPage + 1} de {totalPages || 1}
             </p>
           </div>
         </div>
         
-        <div className="flex items-center gap-1 sm:gap-2">
+        <div className="flex items-center gap-1">
+          {/* Jump to page */}
+          <div className="hidden sm:flex items-center gap-1 mr-2">
+            <Input
+              type="number"
+              min={1}
+              max={totalPages}
+              value={jumpToPage}
+              onChange={(e) => setJumpToPage(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleJumpToPage()}
+              placeholder="Ir a..."
+              className="w-16 h-8 bg-slate-800 border-slate-600 text-white text-sm"
+            />
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleJumpToPage}
+              className="text-white hover:bg-slate-800 h-8 w-8 p-0"
+            >
+              <Search className="h-4 w-4" />
+            </Button>
+          </div>
+          
+          {/* Font size */}
+          <div className="hidden md:flex items-center gap-1 mr-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setFontSize(prev => Math.max(12, prev - 2))}
+              className="text-white hover:bg-slate-800 h-8 w-8 p-0"
+            >
+              <ZoomOut className="h-4 w-4" />
+            </Button>
+            <span className="text-xs text-slate-400 w-8 text-center">{fontSize}</span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setFontSize(prev => Math.min(24, prev + 2))}
+              className="text-white hover:bg-slate-800 h-8 w-8 p-0"
+            >
+              <ZoomIn className="h-4 w-4" />
+            </Button>
+          </div>
+          
           {/* Page list toggle */}
           <Button
             variant="ghost"
@@ -382,7 +459,7 @@ export function LeatherBookReader({ book, onClose }: LeatherBookReaderProps) {
             onClick={() => setShowPageList(!showPageList)}
             className="text-white hover:bg-slate-800 h-9 w-9 sm:w-auto sm:px-3"
           >
-            <Menu className="h-4 w-4 sm:mr-2" />
+            <List className="h-4 w-4 sm:mr-2" />
             <span className="hidden sm:inline">Índice</span>
           </Button>
           
@@ -418,9 +495,35 @@ export function LeatherBookReader({ book, onClose }: LeatherBookReaderProps) {
       
       {/* Page list sidebar */}
       {showPageList && (
-        <div className="absolute left-0 top-16 bottom-16 w-64 bg-slate-900/95 border-r border-slate-700 z-30 overflow-y-auto">
-          <div className="p-3">
-            <h3 className="text-white font-semibold mb-2">Índice de Páginas</h3>
+        <div className="absolute left-0 top-14 bottom-14 w-72 bg-slate-900/98 border-r border-slate-700 z-30 overflow-hidden flex flex-col">
+          <div className="p-3 border-b border-slate-700">
+            <h3 className="text-white font-semibold mb-2 flex items-center gap-2">
+              <List className="h-4 w-4" />
+              Índice de Páginas
+            </h3>
+            {/* Jump to page input for mobile */}
+            <div className="flex sm:hidden items-center gap-2">
+              <Input
+                type="number"
+                min={1}
+                max={totalPages}
+                value={jumpToPage}
+                onChange={(e) => setJumpToPage(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleJumpToPage()}
+                placeholder="Ir a página..."
+                className="flex-1 h-8 bg-slate-800 border-slate-600 text-white text-sm"
+              />
+              <Button
+                variant="default"
+                size="sm"
+                onClick={handleJumpToPage}
+                className="bg-amber-600 hover:bg-amber-700 h-8"
+              >
+                Ir
+              </Button>
+            </div>
+          </div>
+          <div className="flex-1 overflow-y-auto p-2">
             <div className="space-y-1">
               {pages.map((page, index) => (
                 <button
@@ -430,11 +533,11 @@ export function LeatherBookReader({ book, onClose }: LeatherBookReaderProps) {
                     w-full text-left px-3 py-2 rounded text-sm transition-colors
                     ${index === currentPage 
                       ? 'bg-amber-600/30 text-amber-200 border border-amber-500/50' 
-                      : 'text-slate-300 hover:bg-slate-800'}
+                      : 'text-slate-300 hover:bg-slate-800 border border-transparent'}
                   `}
                 >
-                  <span className="font-mono text-xs opacity-60 mr-2">{index + 1}</span>
-                  {page.substring(0, 40)}...
+                  <span className="font-mono text-xs opacity-60 mr-2 inline-block w-8">{index + 1}</span>
+                  {page.substring(0, 50).replace(/\n/g, ' ')}...
                 </button>
               ))}
             </div>
@@ -442,54 +545,68 @@ export function LeatherBookReader({ book, onClose }: LeatherBookReaderProps) {
         </div>
       )}
       
-      {/* Main Content */}
-      <div className="flex-1 flex items-center justify-center px-2 sm:px-8 overflow-hidden relative">
-        {/* Left arrow */}
+      {/* Main Content Area */}
+      <div className="flex-1 flex items-center justify-center overflow-hidden relative px-4 sm:px-12">
+        {/* Left Navigation Button */}
         <button
           onClick={handlePrevPage}
           disabled={currentPage === 0}
           className={`
-            absolute left-0 sm:left-4 z-30 p-3 sm:p-4 rounded-full transition-all
-            ${currentPage === 0 ? 'opacity-30 cursor-not-allowed' : 'opacity-100 hover:bg-white/10 cursor-pointer'}
+            absolute left-0 sm:left-2 z-30 p-4 sm:p-6 rounded-r-xl transition-all
+            flex flex-col items-center gap-1
+            ${currentPage === 0 
+              ? 'opacity-20 cursor-not-allowed bg-transparent' 
+              : 'opacity-100 hover:bg-white/10 cursor-pointer bg-slate-800/30'}
           `}
         >
-          <ChevronLeft className="h-10 w-10 sm:h-12 sm:w-12 text-white" />
-        </button>
+          <ChevronLeft className="h-8 w-8 sm:h-10 sm:w-10 text-white" />
+            <span className="hidden sm:block text-xs text-slate-400">Anterior</span>
+          </button>
         
-        {/* Right arrow */}
+        {/* Right Navigation Button */}
         <button
           onClick={handleNextPage}
           disabled={currentPage >= totalPages - 1}
           className={`
-            absolute right-0 sm:right-4 z-30 p-3 sm:p-4 rounded-full transition-all
-            ${currentPage >= totalPages - 1 ? 'opacity-30 cursor-not-allowed' : 'opacity-100 hover:bg-white/10 cursor-pointer'}
+            absolute right-0 sm:right-2 z-30 p-4 sm:p-6 rounded-l-xl transition-all
+            flex flex-col items-center gap-1
+            ${currentPage >= totalPages - 1 
+              ? 'opacity-20 cursor-not-allowed bg-transparent' 
+              : 'opacity-100 hover:bg-white/10 cursor-pointer bg-slate-800/30'}
           `}
         >
-          <ChevronRight className="h-10 w-10 sm:h-12 sm:w-12 text-white" />
+          <ChevronRight className="h-8 w-8 sm:h-10 sm:w-10 text-white" />
+          <span className="hidden sm:block text-xs text-slate-400">Siguiente</span>
         </button>
         
-        {/* Book page */}
+        {/* Book Page */}
         <div 
-          className="relative bg-gradient-to-br from-amber-50 to-amber-100 rounded-lg overflow-hidden shadow-2xl mx-8 sm:mx-0"
+          className="relative bg-gradient-to-br from-amber-50 to-amber-100 rounded-lg overflow-hidden shadow-2xl w-full"
           style={{
-            width: '100%',
-            maxWidth: '600px',
-            minHeight: '300px',
-            maxHeight: '70vh',
+            maxWidth: '700px',
+            minHeight: '350px',
+            maxHeight: '65vh',
           }}
         >
           {/* Paper texture */}
           <div 
-            className="absolute inset-0 opacity-20 pointer-events-none"
+            className="absolute inset-0 opacity-15 pointer-events-none"
             style={{
               backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")`
             }}
           />
           
           {/* Content */}
-          <div ref={pageContentRef} className="relative p-4 sm:p-8 h-full overflow-y-auto" style={{ maxHeight: 'calc(70vh - 40px)' }}>
+          <div 
+            ref={pageContentRef} 
+            className="relative p-4 sm:p-6 lg:p-8 h-full overflow-y-auto"
+            style={{ maxHeight: 'calc(65vh - 50px)' }}
+          >
             {currentPageContent ? (
-              <p className="text-slate-800 leading-relaxed text-sm sm:text-base whitespace-pre-wrap font-serif">
+              <p 
+                className="text-slate-800 leading-relaxed whitespace-pre-wrap font-serif"
+                style={{ fontSize: `${fontSize}px` }}
+              >
                 {currentPageContent}
               </p>
             ) : (
@@ -502,30 +619,56 @@ export function LeatherBookReader({ book, onClose }: LeatherBookReaderProps) {
             )}
           </div>
           
-          {/* Page number */}
-          <div className="text-center text-xs text-slate-400 py-2 border-t border-slate-200 bg-amber-50/50">
-            {currentPage + 1}
+          {/* Page footer */}
+          <div className="flex items-center justify-between px-4 py-2 border-t border-slate-200 bg-amber-50/50">
+            <button
+              onClick={handlePrevPage}
+              disabled={currentPage === 0}
+              className="text-xs text-slate-500 hover:text-slate-700 disabled:opacity-30"
+            >
+              ← Anterior
+            </button>
+            <span className="text-xs text-slate-500 font-mono">
+              {currentPage + 1} / {totalPages}
+            </span>
+            <button
+              onClick={handleNextPage}
+              disabled={currentPage >= totalPages - 1}
+              className="text-xs text-slate-500 hover:text-slate-700 disabled:opacity-30"
+            >
+              Siguiente →
+            </button>
           </div>
         </div>
       </div>
       
-      {/* Progress bar */}
-      <div className="p-3 sm:p-4 bg-black/50 shrink-0">
-        <div className="flex items-center justify-center gap-3 sm:gap-4">
-          <span className="text-slate-400 text-xs sm:text-sm">Progreso</span>
-          <div className="w-32 sm:w-48 h-2 bg-slate-700 rounded-full overflow-hidden">
-            <div 
-              className="h-full bg-gradient-to-r from-amber-500 to-amber-400 transition-all duration-300"
-              style={{ width: `${totalPages > 0 ? ((currentPage + 1) / totalPages) * 100 : 0}%` }}
+      {/* Bottom Navigation Bar */}
+      <div className="p-2 sm:p-3 bg-black/70 z-20 shrink-0 border-t border-slate-700">
+        {/* Progress slider */}
+        <div className="flex items-center justify-center gap-3 sm:gap-4 mb-2">
+          <span className="text-slate-400 text-xs w-10 text-right">{currentPage + 1}</span>
+          <div className="flex-1 max-w-md">
+            <input
+              type="range"
+              min={0}
+              max={totalPages - 1 || 1}
+              value={currentPage}
+              onChange={(e) => setCurrentPage(parseInt(e.target.value))}
+              className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-amber-500"
             />
           </div>
-          <span className="text-slate-400 text-xs sm:text-sm">
-            {totalPages > 0 ? Math.round(((currentPage + 1) / totalPages) * 100) : 0}%
-          </span>
+          <span className="text-slate-400 text-xs w-10">{totalPages}</span>
         </div>
-        <p className="text-center text-slate-500 text-xs mt-2">
-          ← → Navegar | F Pantalla completa | ESC Salir
-        </p>
+        
+        {/* Progress percentage and shortcuts */}
+        <div className="flex items-center justify-between px-4">
+          <span className="text-slate-500 text-xs">
+            {totalPages > 0 ? Math.round(((currentPage + 1) / totalPages) * 100) : 0}% completado
+          </span>
+          <div className="text-slate-500 text-xs">
+            ← → Navegar | F Pantalla completa | ESC Salir | +/- Tamaño
+          </div>
+        </div>
       </div>
     </div>
   );
