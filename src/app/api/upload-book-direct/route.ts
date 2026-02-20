@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import JSZip from 'jszip';
-
-// Note: PDF support is disabled in production due to node-canvas dependency issues
-// PDF files will return a message asking users to use TXT or EPUB format
+// @ts-expect-error - pdf2json types
+import PDFParser from 'pdf2json';
 
 interface BookSection {
   title: string;
@@ -17,45 +16,52 @@ interface GeneratedCard {
   icon: string;
 }
 
-// Simple PDF text extraction (limited support)
-// For full PDF support, users should convert to TXT or EPUB
+// Extract text from PDF using pdf2json
 async function extractPdfText(buffer: Buffer): Promise<string> {
-  try {
-    // Simple extraction: look for text streams in PDF
-    const text = buffer.toString('utf-8');
+  return new Promise((resolve, reject) => {
+    const pdfParser = new (PDFParser as any)(null, 1);
     
-    // Extract text between BT and ET markers (basic PDF text)
-    const textMatches = text.match(/BT[\s\S]*?ET/g) || [];
-    let extractedText = '';
+    pdfParser.on('pdfParser_dataError', (errData: any) => {
+      console.error('PDF parsing error:', errData.parserError);
+      reject(new Error(errData.parserError));
+    });
     
-    for (const match of textMatches) {
-      // Extract text between parentheses
-      const parentheses = match.match(/\(([^)]+)\)/g) || [];
-      for (const p of parentheses) {
-        extractedText += p.replace(/[()]/g, '') + ' ';
+    pdfParser.on('pdfParser_dataReady', (pdfData: any) => {
+      try {
+        let fullText = '';
+        
+        // Extract text from all pages
+        if (pdfData?.Pages && Array.isArray(pdfData.Pages)) {
+          for (const page of pdfData.Pages) {
+            if (page?.Texts && Array.isArray(page.Texts)) {
+              for (const text of page.Texts) {
+                if (text?.R && Array.isArray(text.R)) {
+                  for (const r of text.R) {
+                    if (r?.T) {
+                      // Decode URI component for proper text
+                      try {
+                        fullText += decodeURIComponent(r.T) + ' ';
+                      } catch {
+                        fullText += r.T + ' ';
+                      }
+                    }
+                  }
+                }
+              }
+              fullText += '\n';
+            }
+          }
+        }
+        
+        resolve(fullText.trim());
+      } catch (error) {
+        reject(error);
       }
-    }
+    });
     
-    // Also try to extract any readable text
-    const readableText = text
-      .replace(/[^\x20-\x7EáéíóúñÁÉÍÓÚÑüÜ\n\r]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-    
-    if (extractedText.length > 100) {
-      return extractedText;
-    }
-    
-    // Fallback to readable ASCII text
-    if (readableText.length > 100) {
-      return readableText;
-    }
-    
-    return 'PDF detectado. Por favor, convierte el archivo a formato TXT o EPUB para mejor extracción de texto.';
-  } catch (error) {
-    console.error('PDF extraction error:', error);
-    return '';
-  }
+    // Parse the buffer
+    pdfParser.parseBuffer(buffer);
+  });
 }
 
 // Extract text from EPUB
@@ -68,22 +74,28 @@ async function extractEpubText(buffer: Buffer): Promise<string> {
       name => name.endsWith('.html') || name.endsWith('.xhtml') || name.endsWith('.htm')
     );
     
-    for (const fileName of htmlFiles.slice(0, 100)) {
+    // Sort files to read in order
+    htmlFiles.sort();
+    
+    for (const fileName of htmlFiles.slice(0, 200)) {
       const content = await zip.file(fileName)?.async('text');
       if (content) {
         const plainText = content
           .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
           .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-          .replace(/<[^>]+>/g, ' ')
-          .replace(/\s+/g, ' ')
+          .replace(/<head[^>]*>[\s\S]*?<\/head>/gi, '')
+          .replace(/<[^>]+>/g, '\n')
           .replace(/&nbsp;/g, ' ')
           .replace(/&amp;/g, '&')
           .replace(/&lt;/g, '<')
           .replace(/&gt;/g, '>')
           .replace(/&quot;/g, '"')
+          .replace(/&#39;/g, "'")
+          .replace(/\n\s*\n/g, '\n\n')
+          .replace(/\s+/g, ' ')
           .trim();
         
-        if (plainText.length > 50) {
+        if (plainText.length > 20) {
           text += plainText + '\n\n';
         }
       }
@@ -96,13 +108,33 @@ async function extractEpubText(buffer: Buffer): Promise<string> {
   }
 }
 
-// Internal function to generate summaries without AI
+// Generate summaries from text - ALWAYS at least 30 cards
 function generateInternalSummary(text: string, bookTitle: string): BookSection[] {
   const sections: BookSection[] = [];
-  const icons = ['📖', '💡', '🎯', '⚡', '🧠', '🚀', '💪', '📚', '🌟', '💎', '🔥', '✨', '📌', '🔑', '🛠️', '📈', '🏆', '💫', '🌈', '🎪', '🎨', '🔔', '🌻', '🍀', '🦋', '🌊', '🏔️', '⭐', '🌍', '🔮'];
+  const icons = ['📖', '💡', '🎯', '⚡', '🧠', '🚀', '💪', '📚', '🌟', '💎', '🔥', '✨', '📌', '🔑', '🛠️', '📈', '🏆', '💫', '🌈', '🎪', '🎨', '🔔', '🌻', '🍀', '🦋', '🌊', '🏔️', '⭐', '🌍', '🔮', '💫', '🎯', '💡', '🔥', '📚', '⚡', '🌟', '💎', '🧠'];
+  
+  const MIN_CARDS = 30;
   
   // Clean and normalize text
-  const cleanText = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  let cleanText = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\s+/g, ' ');
+  
+  // If text is too short, return placeholder sections
+  if (cleanText.length < 500) {
+    for (let i = 0; i < MIN_CARDS; i++) {
+      sections.push({
+        title: `${bookTitle} - Sección ${i + 1}`,
+        content: 'Contenido no disponible. Por favor, intenta con otro archivo o formato.',
+        icon: icons[i % icons.length]
+      });
+    }
+    return sections;
+  }
+  
+  // Split into sentences
+  const sentences = cleanText
+    .split(/(?<=[.!?])\s+/)
+    .map(s => s.trim())
+    .filter(s => s.length > 30);
   
   // Split into paragraphs
   const paragraphs = cleanText
@@ -110,104 +142,113 @@ function generateInternalSummary(text: string, bookTitle: string): BookSection[]
     .map(p => p.trim())
     .filter(p => p.length > 50);
   
-  if (paragraphs.length === 0) {
-    // If no paragraphs found, split by sentences
-    const sentences = cleanText.split(/[.!?]+/).filter(s => s.trim().length > 30);
-    sentences.forEach((sentence, index) => {
-      sections.push({
-        title: `Sección ${index + 1}`,
-        content: sentence.trim().substring(0, 200) + (sentence.length > 200 ? '...' : ''),
-        icon: icons[index % icons.length]
-      });
-    });
-    return sections;
-  }
-  
-  // Extract keywords from text
+  // Extract keywords
   const keywords = extractKeywords(cleanText);
   
-  // Try to identify chapters
+  // Calculate how many cards we need
+  const totalContent = sentences.length + paragraphs.length;
+  let cardsNeeded = MIN_CARDS;
+  
+  // Try to identify chapters/sections
   const chapterPatterns = [
-    /^(capítulo|chapter|parte|part|sección|section)\s*(\d+|[ivxlcIVXLC]+)[:\.\s]*(.*)$/i,
-    /^(\d+)[\.\s]+(.{10,50})$/,
-    /^(introducción|conclusión|prólogo|epílogo|prefacio)/i
+    /^(cap[ií]tulo|chapter|parte|part|secci[oó]n|section)\s*(\d+|[ivxlcIVXLC]+)[:\.\s]*(.*)$/i,
+    /^(\d+)[\.\s]+(.{5,50})$/,
+    /^(introducci[oó]n|conclusi[oó]n|pr[oó]logo|ep[ií]logo|prefacio)/i
   ];
   
-  const chapters: { title: string; paragraphs: string[] }[] = [];
-  let currentChapter = { title: 'Inicio', paragraphs: [] as string[] };
+  const chapters: { title: string; content: string }[] = [];
   
   paragraphs.forEach((para) => {
-    let isChapterStart = false;
-    
     for (const pattern of chapterPatterns) {
       const match = para.match(pattern);
       if (match) {
-        if (currentChapter.paragraphs.length > 0) {
-          chapters.push(currentChapter);
-        }
-        currentChapter = {
-          title: match[0].substring(0, 50).trim(),
-          paragraphs: []
-        };
-        isChapterStart = true;
+        chapters.push({
+          title: match[0].substring(0, 60).trim(),
+          content: para.substring(0, 500)
+        });
         break;
       }
     }
-    
-    if (!isChapterStart) {
-      currentChapter.paragraphs.push(para);
-    }
   });
   
-  if (currentChapter.paragraphs.length > 0) {
-    chapters.push(currentChapter);
-  }
-  
-  // If chapters found, create cards from chapters
-  if (chapters.length > 1) {
-    chapters.forEach((chapter, index) => {
-      if (chapter.paragraphs.length > 0) {
-        const keyParagraphs = chapter.paragraphs.filter(p => p.length > 100).slice(0, 3);
-        const content = keyParagraphs.join(' ').substring(0, 300);
-        
-        sections.push({
-          title: chapter.title.substring(0, 40),
-          content: content + (content.length >= 300 ? '...' : ''),
-          icon: icons[index % icons.length]
-        });
-      }
+  // Add chapter-based cards
+  chapters.forEach((chapter, index) => {
+    sections.push({
+      title: chapter.title,
+      content: chapter.content.length > 300 ? chapter.content.substring(0, 300) + '...' : chapter.content,
+      icon: icons[index % icons.length]
     });
-  }
+  });
   
-  // If not enough sections, use paragraph-based sections
-  if (sections.length < 10) {
-    const totalParagraphs = paragraphs.length;
-    const cardsToGenerate = Math.min(30, Math.max(15, Math.floor(totalParagraphs / 10)));
-    const step = Math.max(1, Math.floor(totalParagraphs / cardsToGenerate));
+  // Generate sentence-based cards
+  if (sentences.length > 0) {
+    const step = Math.max(1, Math.floor(sentences.length / Math.max(1, (cardsNeeded - sections.length))));
     
-    for (let i = 0; i < cardsToGenerate && i * step < totalParagraphs; i++) {
-      const para = paragraphs[i * step];
-      const title = extractTitle(para, keywords, i);
+    for (let i = 0; i < sentences.length && sections.length < cardsNeeded; i += step) {
+      const sentence = sentences[i];
+      const title = extractTitle(sentence, keywords, sections.length);
+      
+      // Combine with next sentences if too short
+      let content = sentence;
+      let j = i + 1;
+      while (content.length < 150 && j < sentences.length && j < i + 5) {
+        content += ' ' + sentences[j];
+        j++;
+      }
       
       sections.push({
         title,
-        content: para.substring(0, 250) + (para.length > 250 ? '...' : ''),
-        icon: icons[i % icons.length]
+        content: content.length > 350 ? content.substring(0, 350) + '...' : content,
+        icon: icons[sections.length % icons.length]
       });
     }
   }
   
-  // Add concept cards based on keyword density
-  const conceptCards = createConceptCards(paragraphs, keywords, icons);
-  sections.push(...conceptCards.slice(0, 10));
+  // Generate paragraph-based cards
+  if (paragraphs.length > 0 && sections.length < cardsNeeded) {
+    const remaining = cardsNeeded - sections.length;
+    const step = Math.max(1, Math.floor(paragraphs.length / remaining));
+    
+    for (let i = 0; i < paragraphs.length && sections.length < cardsNeeded; i += step) {
+      const para = paragraphs[i];
+      const title = extractTitle(para, keywords, sections.length);
+      
+      sections.push({
+        title,
+        content: para.length > 350 ? para.substring(0, 350) + '...' : para,
+        icon: icons[sections.length % icons.length]
+      });
+    }
+  }
   
-  return sections;
+  // Fill remaining with keyword-based concept cards
+  while (sections.length < MIN_CARDS) {
+    const keywordIndex = sections.length % keywords.length;
+    const keyword = keywords[keywordIndex] || 'concepto';
+    
+    // Find sentences containing the keyword
+    const relevantSentences = sentences.filter(s => 
+      s.toLowerCase().includes(keyword.toLowerCase())
+    ).slice(0, 3);
+    
+    const content = relevantSentences.length > 0 
+      ? relevantSentences.join(' ').substring(0, 350)
+      : `Concepto importante relacionado con ${keyword}. Este tema es fundamental para entender el contenido del libro.`;
+    
+    sections.push({
+      title: keyword.charAt(0).toUpperCase() + keyword.slice(1),
+      content: content.length > 350 ? content.substring(0, 350) + '...' : content,
+      icon: icons[sections.length % icons.length]
+    });
+  }
+  
+  return sections.slice(0, 40); // Max 40 cards
 }
 
 // Extract important keywords from text
 function extractKeywords(text: string): string[] {
   const stopWords = new Set([
-    'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas', 'de', 'del', 'al', 'a', 'en', 'con', 'por', 'para', 'es', 'son', 'fue', 'ser', 'tiene', 'han', 'que', 'se', 'no', 'si', 'y', 'o', 'pero', 'como', 'más', 'muy', 'su', 'sus', 'este', 'esta', 'estos', 'estas', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'been', 'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'shall', 'can', 'it', 'its', 'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she', 'we', 'they', 'what', 'which', 'who', 'where', 'when', 'why', 'how', 'all', 'each', 'every', 'both', 'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 'just', 'also', 'now', 'here', 'there', 'then'
+    'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas', 'de', 'del', 'al', 'a', 'en', 'con', 'por', 'para', 'es', 'son', 'fue', 'ser', 'tiene', 'han', 'que', 'se', 'no', 'si', 'y', 'o', 'pero', 'como', 'mas', 'muy', 'su', 'sus', 'este', 'esta', 'estos', 'estas', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'been', 'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'shall', 'can', 'it', 'its', 'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she', 'we', 'they', 'what', 'which', 'who', 'where', 'when', 'why', 'how', 'all', 'each', 'every', 'both', 'few', 'more', 'most', 'other', 'some', 'such', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 'just', 'also', 'now', 'here', 'there', 'then', 'todo', 'nada', 'algo', 'cuando', 'donde', 'porque', 'aunque', 'durante', 'entre', 'sobre', 'hasta', 'desde', 'hacia', 'segun', 'sin', 'sino', 'aunque', 'porque', 'cuando', 'mientras', 'aunque'
   ]);
   
   const words = text.toLowerCase()
@@ -222,59 +263,29 @@ function extractKeywords(text: string): string[] {
   
   return Object.entries(frequency)
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 30)
+    .slice(0, 50)
     .map(([word]) => word);
 }
 
-// Extract title from paragraph
-function extractTitle(paragraph: string, keywords: string[], index: number): string {
-  const firstSentence = paragraph.split(/[.!?]/)[0];
+// Extract title from text
+function extractTitle(text: string, keywords: string[], index: number): string {
+  // First sentence as title
+  const firstSentence = text.split(/[.!?]/)[0];
   
   if (firstSentence.length <= 50 && firstSentence.length > 5) {
     return firstSentence.trim();
   }
   
+  // Find keywords in text
   const foundKeywords = keywords.filter(kw => 
-    paragraph.toLowerCase().includes(kw.toLowerCase())
+    text.toLowerCase().includes(kw.toLowerCase())
   ).slice(0, 3);
   
   if (foundKeywords.length > 0) {
     return foundKeywords.map(k => k.charAt(0).toUpperCase() + k.slice(1)).join(', ');
   }
   
-  return `Concepto ${index + 1}`;
-}
-
-// Create concept cards from paragraphs with high keyword density
-function createConceptCards(paragraphs: string[], keywords: string[], icons: string[]): BookSection[] {
-  const cards: BookSection[] = [];
-  
-  const scoredParagraphs = paragraphs.map((para) => {
-    const lowerPara = para.toLowerCase();
-    let score = 0;
-    keywords.forEach(kw => {
-      const regex = new RegExp(kw, 'gi');
-      const matches = lowerPara.match(regex);
-      if (matches) score += matches.length;
-    });
-    return { paragraph: para, score };
-  });
-  
-  const topParagraphs = scoredParagraphs
-    .filter(sp => sp.paragraph.length > 80 && sp.paragraph.length < 500)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 15);
-  
-  topParagraphs.forEach((sp, cardIndex) => {
-    const title = extractTitle(sp.paragraph, keywords, cardIndex);
-    cards.push({
-      title,
-      content: sp.paragraph.substring(0, 250) + (sp.paragraph.length > 250 ? '...' : ''),
-      icon: icons[(cardIndex + 10) % icons.length]
-    });
-  });
-  
-  return cards;
+  return `Concepto Clave ${index + 1}`;
 }
 
 // Determine category from content
@@ -321,28 +332,42 @@ export async function POST(request: NextRequest) {
     const bytes = await file.arrayBuffer();
     const buffer = Buffer.from(bytes);
     
-    const isEPUB = file.name.endsWith('.epub') || file.type === 'application/epub+zip';
-    const isPDF = file.type === 'application/pdf' || file.name.endsWith('.pdf');
-    const isTXT = file.type === 'text/plain' || file.name.endsWith('.txt');
+    const isEPUB = file.name.toLowerCase().endsWith('.epub') || file.type === 'application/epub+zip';
+    const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+    const isTXT = file.type === 'text/plain' || file.name.toLowerCase().endsWith('.txt');
     
-    console.log(`Processing: ${file.name}, size: ${(file.size / 1024).toFixed(1)} KB`);
+    console.log(`Processing: ${file.name}, size: ${(file.size / 1024).toFixed(1)} KB, type: ${isPDF ? 'PDF' : isEPUB ? 'EPUB' : isTXT ? 'TXT' : 'Unknown'}`);
 
     if (isEPUB) {
+      console.log('Extracting EPUB...');
       fileContent = await extractEpubText(buffer);
     } else if (isPDF) {
-      fileContent = await extractPdfText(buffer);
+      console.log('Extracting PDF...');
+      try {
+        fileContent = await extractPdfText(buffer);
+      } catch (pdfError) {
+        console.error('PDF extraction failed:', pdfError);
+        return NextResponse.json({ 
+          error: 'No se pudo extraer el texto del PDF. Por favor, intenta con un archivo TXT o EPUB para mejor compatibilidad.' 
+        }, { status: 400 });
+      }
     } else if (isTXT) {
+      console.log('Extracting TXT...');
       fileContent = await file.text();
     } else {
       return NextResponse.json({ error: 'Formato no soportado. Use PDF, EPUB o TXT' }, { status: 400 });
     }
 
-    if (!fileContent.trim()) {
-      return NextResponse.json({ error: 'No se pudo extraer texto del archivo.' }, { status: 400 });
+    console.log(`Extracted text length: ${fileContent.length} characters`);
+
+    if (!fileContent.trim() || fileContent.length < 100) {
+      return NextResponse.json({ 
+        error: 'No se pudo extraer suficiente texto del archivo. Intenta con otro archivo o formato (TXT/EPUB recomendados).' 
+      }, { status: 400 });
     }
 
-    // Generate internal summary (no AI)
-    console.log('Generating internal summary...');
+    // Generate internal summary (minimum 30 cards)
+    console.log('Generating summary with minimum 30 cards...');
     const sections = generateInternalSummary(fileContent, bookTitle);
     console.log(`Generated ${sections.length} sections`);
 
@@ -350,38 +375,28 @@ export async function POST(request: NextRequest) {
     const timestamp = Date.now();
     const uniqueId = bookTitle.toLowerCase().replace(/[^a-z0-9]/g, '-').slice(0, 30);
     
-    // Split content for reading - better paragraph-aware chunking
+    // Split content for reading - paragraph-aware chunking
     const contentChunks: string[] = [];
-    const chunkSize = 2500; // characters per page
+    const chunkSize = 2000;
     
-    let currentPosition = 0;
-    while (currentPosition < fileContent.length) {
-      let endPosition = Math.min(currentPosition + chunkSize, fileContent.length);
-      
-      // Try to find a natural break point (paragraph or sentence)
-      if (endPosition < fileContent.length) {
-        const searchStart = Math.max(currentPosition + chunkSize - 200, currentPosition);
-        const searchText = fileContent.substring(searchStart, endPosition + 100);
-        
-        // Look for paragraph break first
-        const paragraphBreak = searchText.lastIndexOf('\n\n');
-        if (paragraphBreak > 0) {
-          endPosition = searchStart + paragraphBreak + 2;
-        } else {
-          // Look for sentence break
-          const sentenceBreak = searchText.lastIndexOf('. ');
-          if (sentenceBreak > 0) {
-            endPosition = searchStart + sentenceBreak + 2;
-          }
-        }
+    // Split by paragraphs first
+    const paragraphs = fileContent.split(/\n\n+/);
+    let currentChunk = '';
+    
+    for (const para of paragraphs) {
+      if (currentChunk.length + para.length > chunkSize && currentChunk.length > 0) {
+        contentChunks.push(currentChunk.trim());
+        currentChunk = para;
+      } else {
+        currentChunk += '\n\n' + para;
       }
-      
-      const chunk = fileContent.substring(currentPosition, endPosition).trim();
-      if (chunk.length > 0) {
-        contentChunks.push(chunk);
-      }
-      currentPosition = endPosition;
     }
+    
+    if (currentChunk.trim().length > 0) {
+      contentChunks.push(currentChunk.trim());
+    }
+    
+    console.log(`Created ${contentChunks.length} reading pages`);
     
     const processedData = {
       id: `book-${uniqueId}-${timestamp}`,
@@ -389,7 +404,7 @@ export async function POST(request: NextRequest) {
       author,
       description: `Libro cargado: ${bookTitle}. ${sections.length} secciones generadas.`,
       category,
-      cards: sections.slice(0, 40).map((section, index): GeneratedCard => ({
+      cards: sections.map((section, index): GeneratedCard => ({
         id: `${uniqueId}-card-${index}-${timestamp}`,
         title: section.title,
         content: section.content,
@@ -408,6 +423,7 @@ export async function POST(request: NextRequest) {
       book: processedData,
       totalCards: processedData.cards.length,
       contentLength: fileContent.length,
+      totalPages: contentChunks.length,
       source: 'internal'
     });
 
