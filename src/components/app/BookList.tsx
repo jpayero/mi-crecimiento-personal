@@ -24,7 +24,7 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { useGrowth, GeneratedBook } from '@/hooks/useLocalStorage';
-import { BookUploader } from './BookUploader';
+import { DirectBookUploader } from './DirectBookUploader';
 
 type ViewMode = 'library' | 'suggested' | 'search' | 'upload';
 
@@ -412,7 +412,7 @@ export function BookList() {
       {/* Upload Modal */}
       {showUploader && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-          <BookUploader
+          <DirectBookUploader
             onBookGenerated={handleUploadedBook}
             onClose={() => setShowUploader(false)}
           />
