@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -18,6 +18,84 @@ import {
 interface DirectBookUploaderProps {
   onBookGenerated: (book: unknown) => void;
   onClose: () => void;
+}
+
+// Extract text from PDF using PDF.js on client side ONLY (dynamic import to avoid SSR issues)
+async function extractPdfTextClientSide(file: File): Promise<string> {
+  if (typeof window === 'undefined') {
+    throw new Error('PDF extraction only works in browser');
+  }
+  
+  // Dynamically import PDF.js only when needed (client-side only)
+  const pdfjsLib = await import('pdfjs-dist');
+  
+  // Set worker source from CDN
+  pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+  
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  
+  let fullText = '';
+  const numPages = pdf.numPages;
+  
+  for (let i = 1; i <= numPages; i++) {
+    const page = await pdf.getPage(i);
+    const textContent = await page.getTextContent();
+    
+    // Extract text from items that have 'str' property (TextItem)
+    const pageText = textContent.items
+      .map(item => ('str' in item ? item.str : ''))
+      .join(' ');
+    
+    fullText += pageText + '\n\n';
+  }
+  
+  return fullText.trim();
+}
+
+// Extract text from EPUB using JSZip on client side
+async function extractEpubTextClientSide(file: File): Promise<string> {
+  if (typeof window === 'undefined') {
+    throw new Error('EPUB extraction only works in browser');
+  }
+  
+  const JSZip = (await import('jszip')).default;
+  const arrayBuffer = await file.arrayBuffer();
+  const zip = await JSZip.loadAsync(arrayBuffer);
+  
+  let text = '';
+  
+  const htmlFiles = Object.keys(zip.files).filter(
+    name => name.endsWith('.html') || name.endsWith('.xhtml') || name.endsWith('.htm')
+  );
+  
+  htmlFiles.sort();
+  
+  for (const fileName of htmlFiles.slice(0, 200)) {
+    const content = await zip.file(fileName)?.async('text');
+    if (content) {
+      const plainText = content
+        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+        .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+        .replace(/<head[^>]*>[\s\S]*?<\/head>/gi, '')
+        .replace(/<[^>]+>/g, '\n')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/\n\s*\n/g, '\n\n')
+        .replace(/\s+/g, ' ')
+        .trim();
+      
+      if (plainText.length > 20) {
+        text += plainText + '\n\n';
+      }
+    }
+  }
+  
+  return text;
 }
 
 export function DirectBookUploader({ onBookGenerated, onClose }: DirectBookUploaderProps) {
@@ -61,7 +139,7 @@ export function DirectBookUploader({ onBookGenerated, onClose }: DirectBookUploa
     }
   };
 
-  const handleUpload = async () => {
+  const handleUpload = useCallback(async () => {
     if (!file || !title.trim()) {
       setError('Por favor selecciona un archivo e ingresa el título');
       return;
@@ -73,26 +151,68 @@ export function DirectBookUploader({ onBookGenerated, onClose }: DirectBookUploa
     setProcessingStatus('Leyendo archivo...');
 
     try {
+      let extractedText = '';
+      const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+      const isEPUB = file.name.toLowerCase().endsWith('.epub') || file.type === 'application/epub+zip';
+      const isTXT = file.type === 'text/plain' || file.name.toLowerCase().endsWith('.txt');
+
+      setUploadProgress(10);
+
+      // Extract text client-side
+      if (isPDF) {
+        setProcessingStatus('Extrayendo texto del PDF...');
+        try {
+          extractedText = await extractPdfTextClientSide(file);
+          console.log('PDF extracted text length:', extractedText.length);
+        } catch (pdfError) {
+          console.error('PDF extraction error:', pdfError);
+          setError('No se pudo extraer el texto del PDF. Intenta con un archivo TXT o EPUB.');
+          setIsUploading(false);
+          return;
+        }
+      } else if (isEPUB) {
+        setProcessingStatus('Extrayendo texto del EPUB...');
+        try {
+          extractedText = await extractEpubTextClientSide(file);
+          console.log('EPUB extracted text length:', extractedText.length);
+        } catch (epubError) {
+          console.error('EPUB extraction error:', epubError);
+          setError('No se pudo extraer el texto del EPUB. Intenta con otro archivo.');
+          setIsUploading(false);
+          return;
+        }
+      } else if (isTXT) {
+        setProcessingStatus('Leyendo archivo de texto...');
+        extractedText = await file.text();
+      }
+
+      setUploadProgress(40);
+      setProcessingStatus('Procesando contenido...');
+
+      if (!extractedText.trim() || extractedText.length < 100) {
+        setError('No se pudo extraer suficiente texto del archivo. Intenta con otro archivo.');
+        setIsUploading(false);
+        return;
+      }
+
+      // Send extracted text to server for processing
       const formData = new FormData();
-      formData.append('file', file);
+      formData.append('extractedText', extractedText);
       formData.append('title', title.trim());
       formData.append('author', author.trim() || 'Desconocido');
+      formData.append('fileType', isPDF ? 'pdf' : isEPUB ? 'epub' : 'txt');
 
-      setUploadProgress(20);
-      setProcessingStatus('Extrayendo texto...');
+      setUploadProgress(60);
+      setProcessingStatus('Generando páginas y tarjetas...');
 
       const response = await fetch('/api/upload-book-direct', {
         method: 'POST',
         body: formData,
       });
 
-      setUploadProgress(50);
-      setProcessingStatus('Procesando contenido...');
+      setUploadProgress(80);
 
       const data = await response.json();
-
-      setUploadProgress(80);
-      setProcessingStatus('Generando páginas...');
 
       if (!response.ok) {
         throw new Error(data.error || 'Error al procesar el libro');
@@ -122,7 +242,7 @@ export function DirectBookUploader({ onBookGenerated, onClose }: DirectBookUploa
     } finally {
       setIsUploading(false);
     }
-  };
+  }, [file, title, author, onBookGenerated, onClose]);
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -160,6 +280,7 @@ export function DirectBookUploader({ onBookGenerated, onClose }: DirectBookUploa
             <CheckCircle className="h-16 w-16 text-emerald-400 mb-4" />
             <p className="text-white text-lg font-medium">¡Libro cargado!</p>
             <p className="text-slate-400 text-sm mt-1">{title}</p>
+            <p className="text-emerald-400 text-xs mt-2">{uploadProgress}% completado</p>
           </div>
         ) : (
           <>
@@ -256,11 +377,12 @@ export function DirectBookUploader({ onBookGenerated, onClose }: DirectBookUploa
             <div className="flex items-start gap-3 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg">
               <File className="h-5 w-5 text-emerald-400 mt-0.5 flex-shrink-0" />
               <div className="text-sm">
-                <p className="font-medium text-emerald-300 mb-1">Procesamiento Directo</p>
+                <p className="font-medium text-emerald-300 mb-1">Extracción Local de Texto</p>
                 <ul className="text-slate-400 text-xs space-y-1">
-                  <li>• El texto se extrae directamente del archivo</li>
-                  <li>• Se divide en páginas para lectura fácil</li>
-                  <li>• No se usa inteligencia artificial</li>
+                  <li>• El PDF se procesa en tu navegador</li>
+                  <li>• Se extrae el texto real, no símbolos</li>
+                  <li>• Genera 30+ tarjetas de resumen</li>
+                  <li>• División en páginas para lectura fácil</li>
                 </ul>
               </div>
             </div>
