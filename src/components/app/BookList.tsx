@@ -62,8 +62,8 @@ export function BookList() {
     return acc;
   }, {} as Record<string, SuggestedBook[]>);
 
-  const handleUploadedBook = (book: GeneratedBook) => {
-    addUploadedBook(book);
+  const handleUploadedBook = (book: unknown) => {
+    addUploadedBook(book as GeneratedBook);
     setSelectedBook(book as Book);
     setShowUploader(false);
   };

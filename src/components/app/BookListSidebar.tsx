@@ -70,10 +70,11 @@ export function BookListSidebar({ isOpen, onToggle }: BookListSidebarProps) {
     ...uploadedBooks
   ];
 
-  const handleUploadedBook = (book: GeneratedBook) => {
-    console.log('Uploading book with fullContent:', book.fullContent?.length, 'pages');
-    addUploadedBook(book);
-    setSelectedBook(book as Book);
+  const handleUploadedBook = (book: unknown) => {
+    const typedBook = book as GeneratedBook;
+    console.log('Uploading book with fullContent:', typedBook.fullContent?.length, 'pages');
+    addUploadedBook(typedBook);
+    setSelectedBook(typedBook as Book);
     setShowUploader(false);
   };
 
